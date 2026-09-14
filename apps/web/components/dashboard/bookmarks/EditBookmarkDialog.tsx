@@ -33,6 +33,7 @@ import { useTranslation } from "@/lib/i18n/client";
 import { cn } from "@/lib/utils";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 import { format } from "date-fns";
 import { CalendarIcon } from "lucide-react";
 import { useForm } from "react-hook-form";
@@ -68,6 +69,10 @@ export function EditBookmarkDialog({
 }) {
   const api = useTRPC();
   const { t } = useTranslation();
+  const { data: session } = useSession();
+  // Collaborators with edit rights can reach this dialog for bookmarks they
+  // don't own. They may edit the shared content, but not owner-private state.
+  const isOwner = session?.user?.id === bookmark.userId;
 
   const { data: assetContent, isLoading: isAssetContentLoading } = useQuery(
     api.bookmarks.getBookmark.queryOptions(
@@ -143,6 +148,12 @@ export function EditBookmarkDialog({
       ...values,
       title: values.title ?? null,
     };
+    if (!isOwner) {
+      // A collaborator with edit rights can change the bookmark's shared
+      // content, but the personal note and creation date belong to the owner.
+      delete payload.note;
+      delete payload.createdAt;
+    }
     updateBookmarkMutate(payload);
   }
 
@@ -205,7 +216,7 @@ export function EditBookmarkDialog({
               />
             )}
 
-            {
+            {isOwner && (
               <FormField
                 control={form.control}
                 name="note"
@@ -223,7 +234,7 @@ export function EditBookmarkDialog({
                   </FormItem>
                 )}
               />
-            }
+            )}
 
             {isLink && (
               <FormField
@@ -328,46 +339,48 @@ export function EditBookmarkDialog({
             )}
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <FormField
-                control={form.control}
-                name="createdAt"
-                render={({ field }) => (
-                  <FormItem className="flex flex-col">
-                    <FormLabel>{t("common.created_at")}</FormLabel>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <FormControl>
-                          <Button
-                            variant={"outline"}
-                            className={cn(
-                              "pl-3 text-left font-normal",
-                              !field.value && "text-muted-foreground",
-                            )}
-                          >
-                            {field.value ? (
-                              format(field.value, "PPP")
-                            ) : (
-                              <span>{t("bookmark_editor.pick_a_date")}</span>
-                            )}
-                            <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
-                          </Button>
-                        </FormControl>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0" align="start">
-                        <Calendar
-                          mode="single"
-                          selected={field.value}
-                          onSelect={field.onChange}
-                          disabled={(date) =>
-                            date > new Date() || date < new Date("1900-01-01")
-                          }
-                        />
-                      </PopoverContent>
-                    </Popover>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              {isOwner && (
+                <FormField
+                  control={form.control}
+                  name="createdAt"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-col">
+                      <FormLabel>{t("common.created_at")}</FormLabel>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <FormControl>
+                            <Button
+                              variant={"outline"}
+                              className={cn(
+                                "pl-3 text-left font-normal",
+                                !field.value && "text-muted-foreground",
+                              )}
+                            >
+                              {field.value ? (
+                                format(field.value, "PPP")
+                              ) : (
+                                <span>{t("bookmark_editor.pick_a_date")}</span>
+                              )}
+                              <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
+                            </Button>
+                          </FormControl>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={field.value}
+                            onSelect={field.onChange}
+                            disabled={(date) =>
+                              date > new Date() || date < new Date("1900-01-01")
+                            }
+                          />
+                        </PopoverContent>
+                      </Popover>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
 
               {isLink && (
                 <FormField
@@ -415,13 +428,21 @@ export function EditBookmarkDialog({
               )}
             </div>
 
-            <FormItem>
-              <FormLabel>{t("common.tags")}</FormLabel>
-              <FormControl>
-                <BookmarkTagsEditor bookmark={bookmark} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
+            {/*
+              Tags are per-user (bookmarkTags is scoped by userId), so a
+              collaborator tagging someone else's bookmark would create the tag
+              in their own namespace. Left owner-only until that's addressed
+              separately (karakeep-app/karakeep#2247).
+            */}
+            {isOwner && (
+              <FormItem>
+                <FormLabel>{t("common.tags")}</FormLabel>
+                <FormControl>
+                  <BookmarkTagsEditor bookmark={bookmark} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
 
             <DialogFooter>
               <Button

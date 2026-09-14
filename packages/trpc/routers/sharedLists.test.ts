@@ -1084,7 +1084,7 @@ describe("Shared Lists", () => {
       expect(bookmarks.bookmarks).toHaveLength(0);
     });
 
-    test<CustomTestContext>("should not allow collaborator to edit bookmark they don't own", async ({
+    test<CustomTestContext>("should allow editor to edit shared content of a bookmark they don't own", async ({
       apiCallers,
     }) => {
       const ownerApi = apiCallers[0];
@@ -1113,13 +1113,274 @@ describe("Shared Lists", () => {
         "editor",
       );
 
-      // Collaborator tries to edit owner's bookmark
+      await collaboratorApi.bookmarks.updateBookmark({
+        bookmarkId: bookmark.id,
+        title: "Modified title",
+        text: "Edited by the collaborator",
+      });
+
+      const updated = await ownerApi.bookmarks.getBookmark({
+        bookmarkId: bookmark.id,
+      });
+      expect(updated.title).toBe("Modified title");
+      expect(
+        updated.content.type === BookmarkTypes.TEXT && updated.content.text,
+      ).toBe("Edited by the collaborator");
+      // The original creator is preserved for auditing.
+      expect(updated.userId).toBe(bookmark.userId);
+    });
+
+    test<CustomTestContext>("should allow editor to edit link fields of a bookmark they don't own", async ({
+      apiCallers,
+    }) => {
+      const ownerApi = apiCallers[0];
+      const collaboratorApi = apiCallers[1];
+
+      const list = await ownerApi.lists.create({
+        name: "Shared List",
+        icon: "📚",
+        type: "manual",
+      });
+
+      const bookmark = await ownerApi.bookmarks.createBookmark({
+        type: BookmarkTypes.LINK,
+        url: "https://example.com/original",
+      });
+
+      await ownerApi.lists.addToList({
+        listId: list.id,
+        bookmarkId: bookmark.id,
+      });
+
+      await addAndAcceptCollaborator(
+        ownerApi,
+        collaboratorApi,
+        list.id,
+        "editor",
+      );
+
+      await collaboratorApi.bookmarks.updateBookmark({
+        bookmarkId: bookmark.id,
+        url: "https://example.com/corrected",
+        description: "Corrected by a teammate",
+      });
+
+      const updated = await ownerApi.bookmarks.getBookmark({
+        bookmarkId: bookmark.id,
+      });
+      expect(
+        updated.content.type === BookmarkTypes.LINK && updated.content.url,
+      ).toBe("https://example.com/corrected");
+      expect(
+        updated.content.type === BookmarkTypes.LINK &&
+          updated.content.description,
+      ).toBe("Corrected by a teammate");
+    });
+
+    test<CustomTestContext>("should not allow editor to change owner-private state", async ({
+      apiCallers,
+    }) => {
+      const ownerApi = apiCallers[0];
+      const collaboratorApi = apiCallers[1];
+
+      const list = await ownerApi.lists.create({
+        name: "Shared List",
+        icon: "📚",
+        type: "manual",
+      });
+
+      const bookmark = await ownerApi.bookmarks.createBookmark({
+        type: BookmarkTypes.TEXT,
+        text: "Owner's bookmark",
+      });
+
+      await ownerApi.lists.addToList({
+        listId: list.id,
+        bookmarkId: bookmark.id,
+      });
+
+      await addAndAcceptCollaborator(
+        ownerApi,
+        collaboratorApi,
+        list.id,
+        "editor",
+      );
+
+      for (const ownerOnly of [
+        { archived: true },
+        { favourited: true },
+        { note: "not yours" },
+        { createdAt: new Date("2020-01-01") },
+      ]) {
+        await expect(
+          collaboratorApi.bookmarks.updateBookmark({
+            bookmarkId: bookmark.id,
+            ...ownerOnly,
+          }),
+        ).rejects.toThrow("Only the bookmark owner can change");
+      }
+
+      // None of it took effect.
+      const after = await ownerApi.bookmarks.getBookmark({
+        bookmarkId: bookmark.id,
+      });
+      expect(after.archived).toBe(false);
+      expect(after.favourited).toBe(false);
+      expect(after.note).toBeNull();
+    });
+
+    test<CustomTestContext>("should allow owner to edit a bookmark a collaborator added to their list", async ({
+      apiCallers,
+    }) => {
+      const ownerApi = apiCallers[0];
+      const collaboratorApi = apiCallers[1];
+
+      const list = await ownerApi.lists.create({
+        name: "Shared List",
+        icon: "📚",
+        type: "manual",
+      });
+
+      await addAndAcceptCollaborator(
+        ownerApi,
+        collaboratorApi,
+        list.id,
+        "editor",
+      );
+
+      const bookmark = await collaboratorApi.bookmarks.createBookmark({
+        type: BookmarkTypes.TEXT,
+        text: "Collaborator's bookmark",
+      });
+      await collaboratorApi.lists.addToList({
+        listId: list.id,
+        bookmarkId: bookmark.id,
+      });
+
+      await ownerApi.bookmarks.updateBookmark({
+        bookmarkId: bookmark.id,
+        title: "Retitled by the list owner",
+      });
+
+      const updated = await collaboratorApi.bookmarks.getBookmark({
+        bookmarkId: bookmark.id,
+      });
+      expect(updated.title).toBe("Retitled by the list owner");
+      expect(updated.userId).toBe(bookmark.userId);
+    });
+
+    test<CustomTestContext>("should not allow viewer to edit a bookmark they don't own", async ({
+      apiCallers,
+    }) => {
+      const ownerApi = apiCallers[0];
+      const collaboratorApi = apiCallers[1];
+
+      const list = await ownerApi.lists.create({
+        name: "Shared List",
+        icon: "📚",
+        type: "manual",
+      });
+
+      const bookmark = await ownerApi.bookmarks.createBookmark({
+        type: BookmarkTypes.TEXT,
+        text: "Owner's bookmark",
+      });
+
+      await ownerApi.lists.addToList({
+        listId: list.id,
+        bookmarkId: bookmark.id,
+      });
+
+      await addAndAcceptCollaborator(
+        ownerApi,
+        collaboratorApi,
+        list.id,
+        "viewer",
+      );
+
       await expect(
         collaboratorApi.bookmarks.updateBookmark({
           bookmarkId: bookmark.id,
           title: "Modified title",
         }),
-      ).rejects.toThrow("User is not allowed to access resource");
+      ).rejects.toThrow("User is not allowed to edit this bookmark");
+    });
+
+    test<CustomTestContext>("should not allow an unrelated user to edit a bookmark", async ({
+      apiCallers,
+    }) => {
+      const ownerApi = apiCallers[0];
+      const strangerApi = apiCallers[2];
+
+      const list = await ownerApi.lists.create({
+        name: "Shared List",
+        icon: "📚",
+        type: "manual",
+      });
+
+      const bookmark = await ownerApi.bookmarks.createBookmark({
+        type: BookmarkTypes.TEXT,
+        text: "Owner's bookmark",
+      });
+
+      await ownerApi.lists.addToList({
+        listId: list.id,
+        bookmarkId: bookmark.id,
+      });
+
+      await expect(
+        strangerApi.bookmarks.updateBookmark({
+          bookmarkId: bookmark.id,
+          title: "Modified title",
+        }),
+      ).rejects.toThrow("Bookmark not found");
+    });
+
+    test<CustomTestContext>("should stop allowing edits once the bookmark leaves the shared list", async ({
+      apiCallers,
+    }) => {
+      const ownerApi = apiCallers[0];
+      const collaboratorApi = apiCallers[1];
+
+      const list = await ownerApi.lists.create({
+        name: "Shared List",
+        icon: "📚",
+        type: "manual",
+      });
+
+      const bookmark = await ownerApi.bookmarks.createBookmark({
+        type: BookmarkTypes.TEXT,
+        text: "Owner's bookmark",
+      });
+
+      await ownerApi.lists.addToList({
+        listId: list.id,
+        bookmarkId: bookmark.id,
+      });
+
+      await addAndAcceptCollaborator(
+        ownerApi,
+        collaboratorApi,
+        list.id,
+        "editor",
+      );
+
+      await collaboratorApi.bookmarks.updateBookmark({
+        bookmarkId: bookmark.id,
+        title: "Allowed while shared",
+      });
+
+      await ownerApi.lists.removeFromList({
+        listId: list.id,
+        bookmarkId: bookmark.id,
+      });
+
+      await expect(
+        collaboratorApi.bookmarks.updateBookmark({
+          bookmarkId: bookmark.id,
+          title: "No longer allowed",
+        }),
+      ).rejects.toThrow("Bookmark not found");
     });
 
     test<CustomTestContext>("should not allow collaborator to delete bookmark they don't own", async ({

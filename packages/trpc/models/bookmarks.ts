@@ -146,11 +146,67 @@ export class BareBookmark {
     return bookmarkLists.some((l) => l.canUserView());
   }
 
+  /**
+   * Whether the user is allowed to change the shared content of this bookmark
+   * (url, title, description, text, ...).
+   *
+   * Owner-private state (archived, favourited, note) is deliberately not
+   * covered by this and stays owner-only, mirroring what `asZBookmark` hides
+   * from collaborators.
+   */
+  protected static async isAllowedToEditBookmark(
+    ctx: AuthedContext,
+    { id: bookmarkId, userId: bookmarkOwnerId }: { id: string; userId: string },
+  ): Promise<boolean> {
+    if (bookmarkOwnerId == ctx.user.id) {
+      return true;
+    }
+    const bookmarkLists = await List.forBookmark(ctx, bookmarkId);
+    return bookmarkLists.some((l) => l.canUserEdit());
+  }
+
   ensureOwnership() {
     if (this.bareBookmark.userId != this.ctx.user.id) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "User is not allowed to access resource",
+      });
+    }
+  }
+
+  /**
+   * Ensure the user can edit this bookmark's shared content, either because
+   * they own it or because it lives in a list they're an editor of.
+   */
+  async ensureEditable() {
+    if (
+      !(await BareBookmark.isAllowedToEditBookmark(this.ctx, {
+        id: this.bareBookmark.id,
+        userId: this.bareBookmark.userId,
+      }))
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "User is not allowed to edit this bookmark",
+      });
+    }
+  }
+
+  /**
+   * Owner-private fields can only ever be changed by the bookmark's owner,
+   * even by a user who is otherwise allowed to edit its shared content.
+   */
+  ensureOwnerOnlyFields(fields: Record<string, unknown>) {
+    if (this.bareBookmark.userId == this.ctx.user.id) {
+      return;
+    }
+    const attempted = Object.entries(fields)
+      .filter(([, value]) => value !== undefined)
+      .map(([key]) => key);
+    if (attempted.length > 0) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: `Only the bookmark owner can change: ${attempted.join(", ")}`,
       });
     }
   }

@@ -109,6 +109,24 @@ export const ensureBookmarkOwnership = experimental_trpcMiddleware<{
   });
 });
 
+export const ensureBookmarkEditAccess = experimental_trpcMiddleware<{
+  ctx: AuthedContext;
+  input: { bookmarkId: string };
+}>().create(async (opts) => {
+  const bookmark = await BareBookmark.bareFromId(
+    opts.ctx,
+    opts.input.bookmarkId,
+  );
+  await bookmark.ensureEditable();
+
+  return opts.next({
+    ctx: {
+      ...opts.ctx,
+      bookmark,
+    },
+  });
+});
+
 export const ensureBookmarkAccess = experimental_trpcMiddleware<{
   ctx: AuthedContext;
   input: { bookmarkId: string };
@@ -569,8 +587,17 @@ export const bookmarksAppRouter = router({
   updateBookmark: bookmarksProcedure
     .input(zUpdateBookmarksRequestSchema)
     .output(zBookmarkSchema)
-    .use(ensureBookmarkOwnership)
+    .use(ensureBookmarkEditAccess)
     .mutation(async ({ input, ctx }) => {
+      // Editors of a shared list may change the bookmark's shared content, but
+      // this owner-private state stays owner-only.
+      ctx.bookmark.ensureOwnerOnlyFields({
+        archived: input.archived,
+        favourited: input.favourited,
+        note: input.note,
+        createdAt: input.createdAt,
+      });
+      const bookmarkOwnerId = ctx.bookmark.userId;
       await ctx.db.transaction((tx) => {
         let somethingChanged = false;
 
@@ -692,7 +719,7 @@ export const bookmarksAppRouter = router({
             .set(commonUpdateData)
             .where(
               and(
-                eq(bookmarks.userId, ctx.user.id),
+                eq(bookmarks.userId, bookmarkOwnerId),
                 eq(bookmarks.id, input.bookmarkId),
               ),
             )
@@ -765,8 +792,9 @@ export const bookmarksAppRouter = router({
         text: z.string(),
       }),
     )
-    .use(ensureBookmarkOwnership)
+    .use(ensureBookmarkEditAccess)
     .mutation(async ({ input, ctx }) => {
+      const bookmarkOwnerId = ctx.bookmark.userId;
       await ctx.db.transaction((tx) => {
         const res = tx
           .update(bookmarkTexts)
@@ -787,7 +815,7 @@ export const bookmarksAppRouter = router({
           .where(
             and(
               eq(bookmarks.id, input.bookmarkId),
-              eq(bookmarks.userId, ctx.user.id),
+              eq(bookmarks.userId, bookmarkOwnerId),
             ),
           )
           .run();

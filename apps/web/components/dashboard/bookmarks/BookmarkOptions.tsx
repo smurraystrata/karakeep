@@ -164,6 +164,14 @@ export default function BookmarkOptions({ bookmark }: { bookmark: ZBookmark }) {
   const { listId } = useBookmarkGridContext() ?? {};
   const withinListContext = useBookmarkListContext();
 
+  // Editors of a shared list can edit the shared content of any bookmark in
+  // it, not just the ones they created. Owner-private actions (favourite,
+  // archive, manage lists, delete) stay gated on `isOwner`.
+  const canEditContent =
+    isOwner ||
+    withinListContext?.userRole === "editor" ||
+    withinListContext?.userRole === "owner";
+
   const onError = () => {
     toast.error(t("common.something_went_wrong"));
   };
@@ -257,7 +265,7 @@ export default function BookmarkOptions({ bookmark }: { bookmark: ZBookmark }) {
       id: "edit",
       title: t("actions.edit"),
       icon: <Pencil className="mr-2 size-4" />,
-      visible: isOwner,
+      visible: canEditContent,
       disabled: false,
       onClick: () => setEditBookmarkDialogOpen(true),
     },
@@ -265,7 +273,7 @@ export default function BookmarkOptions({ bookmark }: { bookmark: ZBookmark }) {
       id: "open-editor",
       title: t("actions.open_editor"),
       icon: <SquarePen className="mr-2 size-4" />,
-      visible: isOwner && bookmark.content.type === BookmarkTypes.TEXT,
+      visible: canEditContent && bookmark.content.type === BookmarkTypes.TEXT,
       disabled: false,
       onClick: () => setTextEditorOpen(true),
     },
