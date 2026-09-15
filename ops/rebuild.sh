@@ -67,6 +67,19 @@ die()  { printf '\n%sFAILED:%s %s\n\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
 
 run_step() { [[ -z "$ONLY_STEP" || "$ONLY_STEP" == "$1" ]]; }
 
+# The commit an existing image was built from, read back out of the stamp the
+# build wrote into it. The push step must use THIS rather than re-deriving from
+# HEAD: the two disagree whenever anything is committed between build and push
+# (`--only push` in a later run), and trusting HEAD there publishes a SHA tag
+# naming a commit whose content is not in the image.
+image_build_sha() {
+  local v
+  v="$(docker image inspect "$1" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+       2>/dev/null | sed -n 's/^SERVER_VERSION=//p' | tail -1)"
+  [[ "$v" =~ \(([0-9a-f]{7,40})\)[[:space:]]*$ ]] || return 1
+  printf '%s' "${BASH_REMATCH[1]}"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --push)        DO_PUSH=1; shift ;;
@@ -308,6 +321,33 @@ if run_step push && [[ $DO_PUSH -eq 1 ]]; then
   push to. Set KARAKEEP_REGISTRY in ops/rebuild.env (see ops/rebuild.env.example).
   This fork is public -- the host deliberately has no default in the repo."
 
+  # Tag from what the IMAGE says it is, not from HEAD. See image_build_sha.
+  PUSH_SHA="$(image_build_sha "$LOCAL_TAG")" || die \
+"cannot read a build SHA out of $LOCAL_TAG's SERVER_VERSION, so there is no
+  way to know which commit this image contains. Rebuild before pushing:
+
+    ops/rebuild.sh --skip-rebase --only build"
+
+  if [[ "$PUSH_SHA" != "$BUILD_SHA" ]]; then
+    warn "image was built from $PUSH_SHA but HEAD is now $BUILD_SHA.
+      Tagging by the image ($PUSH_SHA), which is what it actually contains.
+      Rebuild first if you meant to publish $BUILD_SHA."
+  fi
+
+  PUSH_TAGS=(latest "$PUSH_SHA")
+
+  # Verify EVERY tag exists locally before pushing ANY of them. A partial push
+  # is worse than no push: it moves :latest with no SHA tag behind it, which is
+  # exactly the state the runbook says must never happen.
+  for tag in "${PUSH_TAGS[@]}"; do
+    docker image inspect "$REGISTRY/$IMAGE_REPO:$tag" >/dev/null 2>&1 || die \
+"local tag :$tag is missing, so pushing would publish an incomplete set.
+  Nothing has been pushed. Rebuild to produce the full set:
+
+    ops/rebuild.sh --skip-rebase --only build"
+  done
+  ok "all ${#PUSH_TAGS[@]} tags present locally: ${PUSH_TAGS[*]}"
+
   step "Push to $REGISTRY"
 
   # Check auth before uploading 2GB and failing at the end.
@@ -341,7 +381,9 @@ except Exception:
   fi
   ok "registry reachable (HTTP $code)"
 
-  for tag in latest "$BUILD_SHA"; do
+  # Push the SHA tag FIRST. If the run dies midway, :latest has not moved and
+  # the registry is still consistent; the reverse order strands :latest.
+  for tag in "$PUSH_SHA" latest; do
     docker push "$REGISTRY/$IMAGE_REPO:$tag" 2>&1 | tail -2 \
       || die "push of :$tag failed. See ops/RUNBOOK.md."
     ok "pushed $REGISTRY/$IMAGE_REPO:$tag"
@@ -349,7 +391,7 @@ except Exception:
 
   printf '\n%sDeploy on the VM:%s\n' "$c_bld" "$c_off"
   printf '  docker compose pull && docker compose up -d\n'
-  printf '  Roll back with: %s/%s:%s\n' "$REGISTRY" "$IMAGE_REPO" "$BUILD_SHA"
+  printf '  Roll back with: %s/%s:%s\n' "$REGISTRY" "$IMAGE_REPO" "$PUSH_SHA"
 elif run_step push; then
   step "Push skipped"
   echo "    re-run with --push to publish ${REGISTRY:-<registry>}/$IMAGE_REPO:{latest,$BUILD_SHA}"

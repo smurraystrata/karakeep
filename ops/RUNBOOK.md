@@ -86,6 +86,15 @@ definition, because `ops/` lives on `strata/deploy` and never on the patch
 branch. Tagging by patch SHA would republish an existing immutable tag with
 different content and silently destroy the rollback point it names.
 
+The push step does **not** re-derive the SHA from `HEAD`. It reads it back out
+of the image's own `SERVER_VERSION` stamp, so build and push cannot disagree
+when you commit something between them (`--only push` in a later run). If they
+differ, the script tags by what the image actually contains and warns.
+
+It also verifies every tag exists locally **before** pushing any of them, and
+pushes the SHA tag before `latest`. A partial push that moves `latest` with no
+SHA tag behind it is worse than no push at all.
+
 > Tags pushed before 2026-09-15 were named after the **patch** branch. The
 > historical tag `:2351f157` therefore holds a build of `strata/deploy`, not of
 > the patch commit it appears to name. It is still a valid, immutable rollback
