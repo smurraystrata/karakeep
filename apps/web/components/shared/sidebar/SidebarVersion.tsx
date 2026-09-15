@@ -63,7 +63,9 @@ export default function SidebarVersion({
   const stableRelease = isStableRelease(effectiveChangelogVersion);
   const displayVersion = serverVersion ?? "unknown";
   const changelogDisplayVersion = effectiveChangelogVersion ?? displayVersion;
-  const versionLabel = `Karakeep v${displayVersion}`;
+  // Fork build: show the product name only. The build SHA stays in
+  // SERVER_VERSION for /api/version, telemetry and rollback.
+  const versionLabel = "Karakeep Shaunly";
   const releasePageUrl = useMemo(() => {
     if (
       !effectiveChangelogVersion ||
