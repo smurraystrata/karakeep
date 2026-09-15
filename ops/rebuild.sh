@@ -276,7 +276,25 @@ if run_step push && [[ $DO_PUSH -eq 1 ]]; then
   step "Push to $REGISTRY"
 
   # Check auth before uploading 2GB and failing at the end.
-  code="$(curl -s -o /dev/null -w '%{http_code}' "https://$REGISTRY/v2/" || echo 000)"
+  # NB: /v2/ answers an *anonymous* probe with 401 by design -- that is the auth
+  # challenge, not a failure. Send the credentials docker stored at login.
+  auth="$(python3 -c "
+import json,os,sys
+try:
+    d=json.load(open(os.path.expanduser('~/.docker/config.json')))
+    sys.stdout.write(d['auths']['$REGISTRY'].get('auth',''))
+except Exception:
+    pass
+" 2>/dev/null)"
+  if [[ -z "$auth" ]]; then
+    die "no stored credentials for $REGISTRY. Log in first:
+
+    docker login $REGISTRY
+
+  Then re-run:  ops/rebuild.sh --only push --push"
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Basic $auth" "https://$REGISTRY/v2/" || echo 000)"
   if [[ "$code" == "401" || "$code" == "403" ]]; then
     die "registry auth is stale (HTTP $code from /v2/). Log in first:
 
