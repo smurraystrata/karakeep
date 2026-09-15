@@ -1,0 +1,11 @@
+
+ RUN  v3.2.4 /home/smurray/shaun_code/karakeep/packages/trpc
+
+ ✓ routers/bookmarks.test.ts (43 tests) 2179ms
+ ✓ routers/sharedLists.test.ts (83 tests) 3869ms
+
+ Test Files  2 passed (2)
+      Tests  126 passed (126)
+   Start at  01:28:50
+   Duration  5.55s (transform 601ms, setup 0ms, collect 2.76s, tests 6.05s, environment 0ms, prepare 103ms)
+

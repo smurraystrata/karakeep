@@ -71,6 +71,30 @@ done
 mkdir -p "$LOG_DIR"
 cd "$REPO_ROOT"
 
+# Resolve the toolchain for EVERY step, not just preflight -- otherwise
+# `--only test` silently runs against the system Node and dies inside pnpm
+# with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING.
+want_node="$(tr -d '[:space:]' < .nvmrc 2>/dev/null || echo 24)"
+if [[ -n "${KARAKEEP_NODE_BIN:-}" ]]; then
+  export PATH="$KARAKEEP_NODE_BIN:$PATH"
+elif [[ -d "$HOME/.local/node${want_node}/bin" ]]; then
+  export PATH="$HOME/.local/node${want_node}/bin:$PATH"
+fi
+
+# Assert the Node version globally. Node 20 fails deep inside corepack with a
+# confusing ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING, so fail here with a message
+# that says what to do.
+have_node="$(node --version 2>/dev/null | sed 's/^v//;s/\..*//' || echo none)"
+[[ "$have_node" == "$want_node" ]] || die \
+"Node $want_node required (.nvmrc), found: ${have_node}.
+  Install it side-by-side and re-run, e.g.:
+    curl -fsSL https://nodejs.org/dist/latest-v${want_node}.x/node-v${want_node}.x.y-linux-x64.tar.xz \\
+      | tar -xJ -C \$HOME/.local/node${want_node} --strip-components=1
+  or point at an existing install: KARAKEEP_NODE_BIN=/path/to/node/bin ops/rebuild.sh"
+
+command -v pnpm >/dev/null || die \
+  "pnpm not found (try: corepack enable --install-directory \$HOME/.local/node${want_node}/bin)"
+
 # ------------------------------------------------------------------- preflight
 
 if run_step preflight; then
@@ -78,25 +102,7 @@ if run_step preflight; then
 
   command -v docker >/dev/null || die "docker not found"
   command -v git    >/dev/null || die "git not found"
-
-  # The repo requires Node 24 (.nvmrc). Node 20 fails with a confusing
-  # ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING from corepack, so check explicitly.
-  want_node="$(tr -d '[:space:]' < .nvmrc 2>/dev/null || echo 24)"
-  if [[ -n "${KARAKEEP_NODE_BIN:-}" ]]; then
-    export PATH="$KARAKEEP_NODE_BIN:$PATH"
-  elif [[ -d "$HOME/.local/node${want_node}/bin" ]]; then
-    export PATH="$HOME/.local/node${want_node}/bin:$PATH"
-  fi
-  have_node="$(node --version 2>/dev/null | sed 's/^v//;s/\..*//' || echo none)"
-  [[ "$have_node" == "$want_node" ]] || die \
-"Node $want_node required (.nvmrc), found: ${have_node}.
-  Install it side-by-side and re-run, e.g.:
-    curl -fsSL https://nodejs.org/dist/latest-v${want_node}.x/node-v${want_node}.x.y-linux-x64.tar.xz \\
-      | tar -xJ -C \$HOME/.local/node${want_node} --strip-components=1
-  or point at an existing install: KARAKEEP_NODE_BIN=/path/to/node/bin ops/rebuild.sh"
   ok "node $(node --version)"
-
-  command -v pnpm >/dev/null || die "pnpm not found (try: corepack enable --install-directory \$HOME/.local/node${want_node}/bin)"
   ok "pnpm $(pnpm --version)"
 
   # A failed build that fills the disk is worse than one that refuses to start.
