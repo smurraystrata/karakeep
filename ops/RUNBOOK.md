@@ -18,11 +18,30 @@ each upstream release, not a long-lived fork that drifts.
 
 Remotes: `origin` = our fork, `upstream` = `karakeep-app/karakeep`.
 
+## Configuration
+
+**This fork is public** (`github.com/smurraystrata/karakeep`). Registry hosts and
+deployment naming stay out of it. They live in `ops/rebuild.env`, which is
+gitignored and sourced by the script:
+
+```bash
+cp ops/rebuild.env.example ops/rebuild.env
+$EDITOR ops/rebuild.env          # set KARAKEEP_REGISTRY, KARAKEEP_BRAND
+```
+
+There is **no default registry in the repo**. Without `KARAKEEP_REGISTRY` set,
+everything up to and including `smoke` works normally and `--push` fails loudly.
+`KARAKEEP_BRAND` is the product name stamped into `SERVER_VERSION` and shown in
+the sidebar; the build SHA is appended automatically.
+
+Never commit `ops/rebuild.env`, and never reintroduce a hostname as a default
+in `ops/rebuild.sh`.
+
 ## Routine rebuild
 
 ```bash
 ops/rebuild.sh            # rebase + deps + test + build + smoke, no push
-ops/rebuild.sh --push     # ...and push :latest and :<sha> to the registry
+ops/rebuild.sh --push     # ...and push :latest and :<build-sha> to the registry
 ```
 
 Then on the VM:
@@ -56,13 +75,24 @@ Pin to a release instead of `main`: `--ref v0.34.0`.
 
 | Tag | Use |
 |---|---|
-| `reg.strataops.com/karakeep/karakeep:latest` | What compose pins. Moves every build. |
-| `reg.strataops.com/karakeep/karakeep:<sha>` | Immutable. **This is your rollback target.** |
+| `$REGISTRY/karakeep/karakeep:latest` | What compose pins. Moves every build. |
+| `$REGISTRY/karakeep/karakeep:<sha>` | Immutable. **This is your rollback target.** |
 
 `latest` is only safe *because* the SHA tag exists. Never delete SHA tags.
 
+**`<sha>` is the commit on `strata/deploy` that was built** — the script reads
+it from `HEAD` at build time. It is *not* the patch-branch SHA. These differ by
+definition, because `ops/` lives on `strata/deploy` and never on the patch
+branch. Tagging by patch SHA would republish an existing immutable tag with
+different content and silently destroy the rollback point it names.
+
+> Tags pushed before 2026-09-15 were named after the **patch** branch. The
+> historical tag `:2351f157` therefore holds a build of `strata/deploy`, not of
+> the patch commit it appears to name. It is still a valid, immutable rollback
+> image — just do not read its name as a commit on the patch branch.
+
 Version string is stamped into the image as `SERVER_VERSION`, e.g.
-`Karakeep Shaunly (2351f157)`, visible in the workers' startup log:
+`<brand> (d6f6672c)`, visible in the workers' startup log:
 
 ```bash
 docker logs <container> | grep "Workers version"
@@ -129,13 +159,13 @@ The registry credential has expired. It is *not* a namespace permission problem
 — confirm by checking read access:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://reg.strataops.com/v2/
+curl -s -o /dev/null -w '%{http_code}\n' "https://$KARAKEEP_REGISTRY/v2/"
 ```
 
 401 there means auth, full stop.
 
 ```bash
-docker login reg.strataops.com
+docker login "$KARAKEEP_REGISTRY"
 ops/rebuild.sh --only push --push
 ```
 
@@ -187,7 +217,7 @@ If the new image misbehaves **and no new migration ran**, roll back by pinning
 the previous SHA tag:
 
 ```yaml
-image: reg.strataops.com/karakeep/karakeep:<previous-sha>
+image: <registry>/karakeep/karakeep:<previous-sha>
 ```
 
 ```bash

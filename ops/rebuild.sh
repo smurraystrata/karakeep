@@ -17,9 +17,19 @@ set -euo pipefail
 
 # ---------------------------------------------------------------- configuration
 
-REGISTRY="${KARAKEEP_REGISTRY:-reg.strataops.com}"
+# Site-specific settings (registry host, brand label) live in ops/rebuild.env,
+# which is gitignored. This fork is public -- keep deployment details out of it.
+# Copy ops/rebuild.env.example to ops/rebuild.env to get started.
+_ENV_FILE="${KARAKEEP_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rebuild.env}"
+# shellcheck source=/dev/null
+[[ -f "$_ENV_FILE" ]] && source "$_ENV_FILE"
+
+# No default: an unset registry must fail loudly at push, not silently publish
+# somewhere unintended.
+REGISTRY="${KARAKEEP_REGISTRY:-}"
 IMAGE_REPO="${KARAKEEP_IMAGE_REPO:-karakeep/karakeep}"
 LOCAL_TAG="${KARAKEEP_LOCAL_TAG:-karakeep-fork:editor-edit}"
+BRAND="${KARAKEEP_BRAND:-Karakeep}"
 
 PATCH_BRANCH="${KARAKEEP_PATCH_BRANCH:-feat/editor-can-edit-shared-content}"
 OPS_BRANCH="${KARAKEEP_OPS_BRANCH:-strata/deploy}"
@@ -170,6 +180,17 @@ fi
 
 PATCH_SHA="$(git rev-parse --short "$PATCH_BRANCH")"
 
+# The image tag must name the commit that was actually BUILT, not the patch
+# branch. Those differ whenever strata/deploy carries anything the patch branch
+# does not -- which is always, since ops/ lives here. Tagging by PATCH_SHA
+# republishes an existing immutable tag with different content and destroys the
+# rollback point it names.
+BUILD_SHA="$(git rev-parse --short HEAD)"
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  warn "working tree is dirty; the image will contain uncommitted changes that
+      commit $BUILD_SHA does not, so the tag will not reproduce from git"
+fi
+
 # ------------------------------------------------------------------------ deps
 
 if run_step deps; then
@@ -219,13 +240,18 @@ if run_step build; then
     ok "reusing builder $BUILDER_NAME"
   fi
 
-  version_label="Karakeep Shaunly (${PATCH_SHA})"
+  registry_tags=()
+  if [[ -n "$REGISTRY" ]]; then
+    registry_tags=(-t "$REGISTRY/$IMAGE_REPO:latest"
+                   -t "$REGISTRY/$IMAGE_REPO:$BUILD_SHA")
+  fi
+
+  version_label="${BRAND} (${BUILD_SHA})"
   docker buildx build --builder "$BUILDER_NAME" \
     -f docker/Dockerfile --target aio \
     --build-arg SERVER_VERSION="$version_label" \
     -t "$LOCAL_TAG" \
-    -t "$REGISTRY/$IMAGE_REPO:latest" \
-    -t "$REGISTRY/$IMAGE_REPO:$PATCH_SHA" \
+    "${registry_tags[@]}" \
     --load . 2>&1 | tee "$LOG_DIR/build.log" | tail -5
 
   docker image inspect "$LOCAL_TAG" >/dev/null 2>&1 \
@@ -260,11 +286,16 @@ if run_step smoke; then
     die "container did not become healthy (status: $health). Log: $LOG_DIR/smoke.log"
   }
 
-  docker logs "$name" 2>&1 | grep -q "init-db-migration successfully started" \
-    || die "DB migrations did not complete. Do NOT deploy. Logs: docker logs $name"
+  # Save the log BEFORE dying: the EXIT trap removes the container, so a die
+  # message telling you to run `docker logs` is a message about a container that
+  # no longer exists. Every failure path here leaves evidence on disk.
+  docker logs "$name" > "$LOG_DIR/smoke.log" 2>&1
 
-  docker logs "$name" 2>&1 | grep -F "$PATCH_SHA" >/dev/null \
-    || warn "version string '$PATCH_SHA' not seen in logs; check SERVER_VERSION"
+  grep -q "init-db-migration successfully started" "$LOG_DIR/smoke.log" \
+    || die "DB migrations did not complete. Do NOT deploy. Log: $LOG_DIR/smoke.log"
+
+  grep -F "$BUILD_SHA" "$LOG_DIR/smoke.log" >/dev/null \
+    || warn "version string '$BUILD_SHA' not seen in logs; check SERVER_VERSION"
 
   cleanup_smoke; trap - EXIT
   ok "healthy, migrations ran, version stamped"
@@ -273,6 +304,10 @@ fi
 # ------------------------------------------------------------------------ push
 
 if run_step push && [[ $DO_PUSH -eq 1 ]]; then
+  [[ -n "$REGISTRY" ]] || die "no registry configured, so there is nothing to
+  push to. Set KARAKEEP_REGISTRY in ops/rebuild.env (see ops/rebuild.env.example).
+  This fork is public -- the host deliberately has no default in the repo."
+
   step "Push to $REGISTRY"
 
   # Check auth before uploading 2GB and failing at the end.
@@ -306,7 +341,7 @@ except Exception:
   fi
   ok "registry reachable (HTTP $code)"
 
-  for tag in latest "$PATCH_SHA"; do
+  for tag in latest "$BUILD_SHA"; do
     docker push "$REGISTRY/$IMAGE_REPO:$tag" 2>&1 | tail -2 \
       || die "push of :$tag failed. See ops/RUNBOOK.md."
     ok "pushed $REGISTRY/$IMAGE_REPO:$tag"
@@ -314,10 +349,11 @@ except Exception:
 
   printf '\n%sDeploy on the VM:%s\n' "$c_bld" "$c_off"
   printf '  docker compose pull && docker compose up -d\n'
-  printf '  Roll back with: %s/%s:%s\n' "$REGISTRY" "$IMAGE_REPO" "$PATCH_SHA"
+  printf '  Roll back with: %s/%s:%s\n' "$REGISTRY" "$IMAGE_REPO" "$BUILD_SHA"
 elif run_step push; then
   step "Push skipped"
-  echo "    re-run with --push to publish $REGISTRY/$IMAGE_REPO:{latest,$PATCH_SHA}"
+  echo "    re-run with --push to publish ${REGISTRY:-<registry>}/$IMAGE_REPO:{latest,$BUILD_SHA}"
 fi
 
-printf '\n%sDone.%s  patch=%s  image=%s\n' "$c_grn" "$c_off" "$PATCH_SHA" "$LOCAL_TAG"
+printf '\n%sDone.%s  patch=%s  build=%s  image=%s\n' \
+  "$c_grn" "$c_off" "$PATCH_SHA" "$BUILD_SHA" "$LOCAL_TAG"

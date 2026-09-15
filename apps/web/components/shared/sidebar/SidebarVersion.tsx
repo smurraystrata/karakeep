@@ -65,7 +65,15 @@ export default function SidebarVersion({
   const changelogDisplayVersion = effectiveChangelogVersion ?? displayVersion;
   // Fork build: show the product name only. The build SHA stays in
   // SERVER_VERSION for /api/version, telemetry and rollback.
-  const versionLabel = "Karakeep Shaunly";
+  // SERVER_VERSION is stamped as "<brand> (<sha>)" at build time, so the label
+  // is that string minus the trailing SHA. The brand is not hardcoded here --
+  // it comes from the build, keeping deployment naming out of this public fork.
+  const versionLabel = useMemo(
+    () =>
+      (serverVersion ?? "").replace(/\s*\([^()]*\)\s*$/, "").trim() ||
+      "Karakeep",
+    [serverVersion],
+  );
   const releasePageUrl = useMemo(() => {
     if (
       !effectiveChangelogVersion ||
